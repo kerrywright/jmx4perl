@@ -34,8 +34,8 @@ public final class Version {
 
     private static final String VERSION = "0.65.0";
 
-    // Version of the 
-    private static final String PROTOCOL = "3";
+    // Major.Minor version of protocol
+    private static final String PROTOCOL = "3.1";
 
     private Version() {}
 
