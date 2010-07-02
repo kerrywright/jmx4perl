@@ -65,7 +65,30 @@ public enum Config {
     // Runtime configuration (i.e. must come in with a request)
     // for ignoring errors during JMX operations and JSON serialization.
     // This works only for certain operations like pattern reads.
-    IGNORE_ERRORS("ignoreErrors");
+    IGNORE_ERRORS("ignoreErrors"),
+
+    // Maximum number of JSR160 remote connections to open to a single
+    // remote MBean server
+    // Default: 3
+    JSR160_POOL_MAX_SIZE("jsr160MaxSize", "3"),
+
+    // Maximum number of idle connections to leave in the pool for a
+    // single remote MBean server
+    // Default: 1
+    JSR160_POOL_MAX_IDLE("jsr160MaxIdle", "1"),
+
+    // The amount of time for a JSR160 connection to remain idle in
+    // the connection pool before being eligible for eviction.
+    // Also defines the frequency of the pool cleanup thread, which
+    // will be 50% of this value, ensuring the worst case time that
+    // an idle object will be in the pool is 150% of this value.
+    // Default: 3s
+    JSR160_POOL_IDLE_TIME("jsr160MaxIdle", "30000"),
+
+    // The amount of time to wait on getting a pooled JSR160 connection
+    // before throwing an exception
+    // Default: 10s
+    JSR160_POOL_MAX_WAIT_TIME("jsr160MaxWait", "10000");
 
     private String key;
     private String defaultValue;
@@ -113,6 +136,13 @@ public enum Config {
             value = this.getDefaultValue();
         }
         return value;
+    }
+
+    // Extract value from map, including a default value if
+    // value is not set and return it as an integer
+    public int getIntValue(Map<Config, String> pConfig)
+    {
+        return Integer.parseInt(getValue(pConfig));
     }
 
     // Extract config options from a given map

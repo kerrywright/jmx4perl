@@ -94,7 +94,7 @@ public class BackendManager {
                                                      stringToObjectConverter,
                                                      restrictor);
         requestDispatchers = createRequestDispatchers(DISPATCHER_CLASSES.getValue(pConfig),
-                                                      objectToJsonConverter,stringToObjectConverter,restrictor);
+                                                      objectToJsonConverter,stringToObjectConverter,restrictor,pConfig);
         requestDispatchers.add(localDispatcher);
 
         // Backendstore for remembering state
@@ -105,7 +105,8 @@ public class BackendManager {
     private List<RequestDispatcher> createRequestDispatchers(String pClasses,
                                                              ObjectToJsonConverter pObjectToJsonConverter,
                                                              StringToObjectConverter pStringToObjectConverter,
-                                                             Restrictor pRestrictor) {
+                                                             Restrictor pRestrictor,
+                                                             Map<Config, String> pConfig) {
         List<RequestDispatcher> ret = new ArrayList<RequestDispatcher>();
         if (pClasses == null || pClasses.length() == 0) {
             return ret;
@@ -114,14 +115,36 @@ public class BackendManager {
         for (String name : names) {
             try {
                 Class clazz = this.getClass().getClassLoader().loadClass(name);
-                Constructor constructor = clazz.getConstructor(ObjectToJsonConverter.class,
+
+                Constructor constructor = null;
+                RequestDispatcher dispatcher = null;
+
+                try {
+                    constructor = clazz.getConstructor(ObjectToJsonConverter.class,
                                                                StringToObjectConverter.class,
-                                                               Restrictor.class);
-                RequestDispatcher dispatcher =
+                                                               Restrictor.class,
+                                                               Map.class);
+                    dispatcher =
                         (RequestDispatcher)
                                 constructor.newInstance(pObjectToJsonConverter,
                                                         pStringToObjectConverter,
+                                                        pRestrictor,
+                                                        pConfig);
+                } catch (NoSuchMethodException e) {
+                    // do nothing, check for next constructor
+                }
+                
+                if (constructor == null)
+                {
+                    constructor = clazz.getConstructor(ObjectToJsonConverter.class,
+                                                               StringToObjectConverter.class,
+                                                               Restrictor.class);
+                    dispatcher =
+                            (RequestDispatcher)
+                                    constructor.newInstance(pObjectToJsonConverter,
+                                                        pStringToObjectConverter,
                                                         pRestrictor);
+                }
                 ret.add(dispatcher);
             } catch (ClassNotFoundException e) {
                 throw new IllegalArgumentException("Couldn't load class " + name + ": " + e,e);

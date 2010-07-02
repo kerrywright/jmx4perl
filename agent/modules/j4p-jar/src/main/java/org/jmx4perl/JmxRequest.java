@@ -444,6 +444,29 @@ public class JmxRequest {
                     ", " + env +
                     "]";
         }
+
+        @Override
+        public int hashCode() {
+            int ret = url.hashCode();
+            if (env != null) {
+                if (env.get("user") != null) ret = ret * 37 + env.get("user").hashCode();
+                if (env.get("password") != null) ret = ret * 17 + env.get("password").hashCode();
+            }
+            return ret;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (!(o instanceof TargetConfig)) return false;
+            
+            TargetConfig that = (TargetConfig) o;
+            if ((this.env == null && that.env != null) || (this.env != null && that.env == null)) return false;
+            if (!this.url.equals(that.url))return false;
+            if (this.env == null) return true;
+            
+            return ((this.env.get("user") == null && that.env.get("user") == null) || this.env.get("user").equals(that.env.get("user"))) &&
+                   ((this.env.get("password") == null && that.env.get("password") == null) || this.env.get("password").equals(that.env.get("password")));
+        }
     }
 
     // =======================================================================================================
