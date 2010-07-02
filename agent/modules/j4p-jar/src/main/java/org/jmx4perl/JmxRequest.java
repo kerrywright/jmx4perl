@@ -1,10 +1,12 @@
 package org.jmx4perl;
 
-import org.json.simple.JSONObject;
+import java.util.*;
 
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
-import java.util.*;
+
+import org.jmx4perl.config.ConfigProperty;
+import org.json.simple.JSONObject;
 
 /*
  * jmx4perl - WAR Agent for exporting JMX via JSON
@@ -71,6 +73,7 @@ public class JmxRequest {
     private String objectNameS;
     private ObjectName objectName;
     private List<String> attributeNames;
+    private boolean singleAttribute = true;
     private String value;
     private List<String> extraArgs;
     private String operation;
@@ -78,10 +81,10 @@ public class JmxRequest {
     private TargetConfig targetConfig = null;
 
     // Processing configuration for tis request object
-    private Map<Config, String> processingConfig = new HashMap<Config, String>();
+    private Map<ConfigProperty, String> processingConfig = new HashMap<ConfigProperty, String>();
 
     // A value fault handler for dealing with exception when extracting values
-    ValueFaultHandler valueFaultHandler = NOOP_VALUE_FAULT_HANDLER;
+    private ValueFaultHandler valueFaultHandler = NOOP_VALUE_FAULT_HANDLER;
 
     /**
      * Create a request with the given type (with no MBean name)
@@ -103,10 +106,7 @@ public class JmxRequest {
      */
     JmxRequest(Type pType,String pObjectNameS) throws MalformedObjectNameException {
         type = pType;
-        if (pObjectNameS != null) {
-            objectNameS = pObjectNameS;
-            objectName = new ObjectName(objectNameS);
-        }
+        initObjectName(pObjectNameS);
     }
 
     /**
@@ -118,60 +118,19 @@ public class JmxRequest {
         if (type == null) {
             throw new IllegalArgumentException("Type is required");
         }
-        String s = (String) pMap.get("mbean");
-        if (s != null) {
-            objectNameS = s;
-            objectName = new ObjectName(s);
-        }
-        Object attrVal = pMap.get("attribute");
-        if (attrVal != null) {
-            attributeNames = new ArrayList<String>();
-            if (attrVal instanceof String) {
-                attributeNames.add((String) attrVal);
-            } else if (attrVal instanceof Collection) {
-                for (Object val : (Collection) attrVal) {
-                    attributeNames.add((String) val);
-                }
-            }
-        }
-        s = (String) pMap.get("path");
-        if (s != null) {
-            extraArgs = splitPath(s);
-        } else {
-            extraArgs = new ArrayList<String>();
-        }
-        List l = (List) pMap.get("arguments");
-        if (l != null && l.size() > 0) {
-            extraArgs = new ArrayList<String>();
-            for (Object val : l) {
-                extraArgs.add(val != null ? val.toString() : null);
-            }
-        }
-        s = (String) pMap.get("value");
-        if (s != null) {
-             value = s;
-        }
-        s = (String) pMap.get("operation");
-        if (s != null) {
-            operation = s;
-        }
 
-        Map target = (Map) pMap.get("target");
-        if (target != null) {
-            targetConfig = new TargetConfig(target);
-        }
+        initObjectName((String) pMap.get("mbean"));
 
-        Map<String,?> config = (Map<String,?>) pMap.get("config");
-        if (config != null) {
-            for (String key : config.keySet()) {
-                setProcessingConfig(key,config.get(key));
-            }
-        }
+        initAttribute(pMap.get("attribute"));
+        initPath((String) pMap.get("path"));
+        initArguments((List) pMap.get("arguments"));
+        value = (String) pMap.get("value");
+        operation = (String) pMap.get("operation");
+        initTargetConfig((Map) pMap.get("target"));
 
-        s = getProcessingConfig(Config.IGNORE_ERRORS);
-        if (s != null && s.matches("^(true|yes|on|1)$")) {
-            valueFaultHandler = IGNORE_VALUE_FAULT_HANDLER;
-        }
+        initProcessingConfig((Map<String,?>) pMap.get("config"));
+
+        initValueFaultHandler();
     }
 
     public String getObjectNameAsString() {
@@ -186,7 +145,7 @@ public class JmxRequest {
         if (attributeNames == null) {
             return null;
         }
-        if (attributeNames.size() != 1) {
+        if (!isSingleAttribute()) {
             throw new IllegalStateException("Request contains more than one attribute (attrs = " +
                     "" + attributeNames + "). Use getAttributeNames() instead.");
         }
@@ -206,7 +165,7 @@ public class JmxRequest {
             StringBuffer buf = new StringBuffer();
             Iterator<String> it = extraArgs.iterator();
             while (it.hasNext()) {
-                buf.append(it.next());
+                buf.append(escapePathPart(it.next()));
                 if (it.hasNext()) {
                     buf.append("/");
                 }
@@ -217,9 +176,22 @@ public class JmxRequest {
         }
     }
 
-    private List<String> splitPath(String pPath) {
-        String[] elements = pPath.split("/");
-        return Arrays.asList(elements);
+    private static String escapePathPart(String pPathPart) {
+        return pPathPart.replaceAll("/","\\\\/");
+    }
+
+    private static String unescapePathPart(String pPathPart) {
+        return pPathPart.replaceAll("\\\\/","/");
+    }
+
+    static List<String> splitPath(String pPath) {
+        // Split on '/' but not on '\/':
+        String[] elements = pPath.split("(?<!\\\\)/+");
+        List<String> ret = new ArrayList<String>();
+        for (String element : elements) {
+            ret.add(unescapePathPart(element));
+        }
+        return ret;
     }
 
     public String getValue() {
@@ -236,37 +208,35 @@ public class JmxRequest {
 
     /**
      * Get a processing configuration or null if not set
-     * @param pConfig configuration key to fetch
+     * @param pConfigProperty configuration key to fetch
      * @return string value or <code>null</code> if not set
      */
-    public String getProcessingConfig(Config pConfig) {
-        return processingConfig.get(pConfig);
+    public final String getProcessingConfig(ConfigProperty pConfigProperty) {
+        return processingConfig.get(pConfigProperty);
     }
 
     /**
      * Get a processing configuration as integer or null
      * if not set
      *
-     * @param pConfig configuration to lookup
+     * @param pConfigProperty configuration to lookup
      * @return integer value of configuration or null if not set.
      */
-    public Integer getProcessingConfigAsInt(Config pConfig) {
-        String value = processingConfig.get(pConfig);
-        if (value != null) {
-            return Integer.parseInt(value);
+    public Integer getProcessingConfigAsInt(ConfigProperty pConfigProperty) {
+        String intValueS = processingConfig.get(pConfigProperty);
+        if (intValueS != null) {
+            return Integer.parseInt(intValueS);
         } else {
             return null;
         }
     }
 
-    void setProcessingConfig(String pKey, Object pValue) {
-        Config cKey = Config.getByKey(pKey);
+    final void setProcessingConfig(String pKey, Object pValue) {
+        ConfigProperty cKey = ConfigProperty.getByKey(pKey);
         if (cKey != null) {
             processingConfig.put(cKey,pValue != null ? pValue.toString() : null);
         }
     }
-
-
 
     void setAttributeName(String pName) {
         if (attributeNames != null) {
@@ -275,12 +245,21 @@ public class JmxRequest {
             attributeNames = new ArrayList<String>(1);
         }
         attributeNames.add(pName);
+        singleAttribute = true;
     }
 
     void setAttributeNames(List<String> pAttributeNames) {
         attributeNames = pAttributeNames;
+        if (attributeNames != null && pAttributeNames.size() > 1) {
+            singleAttribute = false;
+        } else {
+            singleAttribute = true;
+        }
     }
 
+    public boolean isSingleAttribute() {
+        return singleAttribute;
+    }
 
     void setValue(String pValue) {
         value = pValue;
@@ -311,19 +290,7 @@ public class JmxRequest {
     public String toString() {
         StringBuffer ret = new StringBuffer("JmxRequest[");
         if (type == Type.READ) {
-            ret.append("READ mbean=").append(objectNameS);
-            if (attributeNames != null && attributeNames.size() > 1) {
-                ret.append(", attribute=[");
-                for (int i = 0;i<attributeNames.size();i++) {
-                    ret.append(attributeNames.get(i));
-                    if (i < attributeNames.size() - 1) {
-                        ret.append(",");
-                    }
-                }
-                ret.append("]");
-            } else {
-                ret.append(", attribute=").append(getAttributeName());
-            }
+            appendReadParameters(ret);
         } else if (type == Type.WRITE) {
             ret.append("WRITE mbean=").append(objectNameS).append(", attribute=").append(getAttributeName())
                     .append(", value=").append(value);
@@ -332,6 +299,7 @@ public class JmxRequest {
         } else {
             ret.append(type).append(" mbean=").append(objectNameS);
         }
+
         if (extraArgs != null && extraArgs.size() > 0) {
             ret.append(", extra=").append(extraArgs);
         }
@@ -340,6 +308,22 @@ public class JmxRequest {
         }
         ret.append("]");
         return ret.toString();
+    }
+
+    private void appendReadParameters(StringBuffer pRet) {
+        pRet.append("READ mbean=").append(objectNameS);
+        if (attributeNames != null && attributeNames.size() > 1) {
+            pRet.append(", attribute=[");
+            for (int i = 0;i<attributeNames.size();i++) {
+                pRet.append(attributeNames.get(i));
+                if (i < attributeNames.size() - 1) {
+                    pRet.append(",");
+                }
+            }
+            pRet.append("]");
+        } else {
+            pRet.append(", attribute=").append(getAttributeName());
+        }
     }
 
     /**
@@ -352,36 +336,124 @@ public class JmxRequest {
         if (objectName != null) {
             ret.put("mbean",objectName.getCanonicalName());
         }
-        if (attributeNames != null && attributeNames.size() > 0) {
-            if (attributeNames.size() > 1) {
-                ret.put("attribute",attributeNames);
-            } else {
-                ret.put("attribute",attributeNames.get(0));
-            }
-        }
-        if (extraArgs != null && extraArgs.size() > 0) {
-            if (type == Type.READ || type == Type.WRITE) {
-                ret.put("path",getExtraArgsAsPath());
-            } else if (type == Type.EXEC) {
-                ret.put("arguments",extraArgs);
-            }
-        }
+        addAttributesAsJson(ret);
+        addExtraArgsAsJson(ret);
         if (value != null) {
-            ret.put("value",value);
+            ret.put("value", value);
         }
         if (operation != null) {
-            ret.put("operation",operation);
+            ret.put("operation", operation);
         }
+
         if (targetConfig != null) {
             ret.put("target", targetConfig.toJSON());
         }
         return ret;
     }
 
+    private void addAttributesAsJson(JSONObject pJsonObject) {
+        if (attributeNames != null && attributeNames.size() > 0) {
+            if (attributeNames.size() > 1) {
+                pJsonObject.put("attribute",attributeNames);
+            } else {
+                pJsonObject.put("attribute",attributeNames.get(0));
+            }
+        }
+    }
+
+    private void addExtraArgsAsJson(JSONObject pJsonObject) {
+        if (extraArgs != null && extraArgs.size() > 0) {
+            if (type == Type.READ || type == Type.WRITE) {
+                pJsonObject.put("path",getExtraArgsAsPath());
+            } else if (type == Type.EXEC) {
+                pJsonObject.put("arguments",extraArgs);
+            }
+        }
+    }
+
+    // =====================================================================================================
+    // Initializations via a map
+
+    private void initObjectName(String pObjectName) throws MalformedObjectNameException {
+        if (pObjectName != null) {
+            objectNameS = pObjectName;
+            objectName = new ObjectName(objectNameS);
+        }
+    }
+
+    private void initValueFaultHandler() {
+        String s;
+        s = getProcessingConfig(ConfigProperty.IGNORE_ERRORS);
+        if (s != null && s.matches("^(true|yes|on|1)$")) {
+            valueFaultHandler = IGNORE_VALUE_FAULT_HANDLER;
+        }
+    }
+
+    private void initProcessingConfig(Map<String, ?> pConfig) {
+        if (pConfig != null) {
+            for (Map.Entry<String,?> entry : pConfig.entrySet()) {
+                setProcessingConfig(entry.getKey(),entry.getValue());
+            }
+        }
+    }
+
+    private void initTargetConfig(Map pTarget) {
+        if (pTarget != null) {
+            targetConfig = new TargetConfig(pTarget);
+        }
+    }
+
+    private void initArguments(List pArguments) {
+        if (pArguments != null && pArguments.size() > 0) {
+            extraArgs = new ArrayList<String>();
+            for (Object val : pArguments) {
+                if (val instanceof List) {
+                    extraArgs.add(listToString((List) val));
+                } else {
+                    extraArgs.add(val != null ? val.toString() : null);
+                }
+            }
+        }
+    }
+
+    private String listToString(List pList) {
+        StringBuilder arrayArg = new StringBuilder();
+        for (int i = 0; i < pList.size(); i++) {
+            arrayArg.append(pList.get(i) != null ? pList.get(i).toString() : "[null]");
+            if (i < pList.size() - 1) {
+                arrayArg.append(",");
+            }
+        }
+        return arrayArg.toString();
+    }
+
+    private void initPath(String pPath) {
+        if (pPath != null) {
+            extraArgs = splitPath(pPath);
+        } else {
+            extraArgs = new ArrayList<String>();
+        }
+    }
+
+    private void initAttribute(Object pAttrval) {
+        if (pAttrval != null) {
+            attributeNames = new ArrayList<String>();
+            if (pAttrval instanceof String) {
+                attributeNames.add((String) pAttrval);
+                singleAttribute = true;
+            } else if (pAttrval instanceof Collection) {
+                for (Object val : (Collection) pAttrval) {
+                    attributeNames.add((String) val);
+                }
+                singleAttribute = false;
+            }
+        }
+    }
+
     /**
-     * Handle an exception occured during value extraction
+     * Handle an exception happened during value extraction
      *
-     * @param pFault the fault occured
+     * @param pFault the fault raised
      * @return a replacement value if this should be used instead or the exception is rethrown if
      *         the handler doesn't handle it
      */
@@ -484,14 +556,14 @@ public class JmxRequest {
         <T extends Throwable> Object handleException(T exception) throws T;
     }
 
-    final private static ValueFaultHandler NOOP_VALUE_FAULT_HANDLER = new ValueFaultHandler() {
+    private static final ValueFaultHandler NOOP_VALUE_FAULT_HANDLER = new ValueFaultHandler() {
         public <T extends Throwable> Object handleException(T exception) throws T {
             // Dont handle exception on our own, we rethrow it
             throw exception;
         }
     };
 
-    final private static ValueFaultHandler IGNORE_VALUE_FAULT_HANDLER = new ValueFaultHandler() {
+    private static final  ValueFaultHandler IGNORE_VALUE_FAULT_HANDLER = new ValueFaultHandler() {
         public <T extends Throwable> Object handleException(T exception) throws T {
             return "ERROR: " + exception.getMessage() + " (" + exception.getClass() + ")";
         }

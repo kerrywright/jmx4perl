@@ -1,6 +1,6 @@
 package org.jmx4perl.mule;
 
-import org.jmx4perl.AgentServlet;
+import org.jmx4perl.http.AgentServlet;
 import org.mortbay.jetty.Connector;
 import org.mortbay.jetty.HandlerContainer;
 import org.mortbay.jetty.Server;
@@ -116,13 +116,13 @@ public class J4pAgent extends AbstractAgent {
     }
 
     private Server getServer(int pPort) {
-        Server server = new Server();
+        Server newServer = new Server();
 
         Connector connector = new SelectChannelConnector();
         connector.setPort(pPort);
-        server.setConnectors(new Connector[]{connector});
+        newServer.setConnectors(new Connector[]{connector});
 
-        return server;
+        return newServer;
     }
 
 

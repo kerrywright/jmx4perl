@@ -1,24 +1,20 @@
 package org.jmx4perl.osgi;
 
-import org.jmx4perl.AgentServlet;
-import org.jmx4perl.Config;
+import java.util.Dictionary;
+import java.util.Hashtable;
+
+import javax.servlet.ServletException;
+
+import org.jmx4perl.config.ConfigProperty;
+import org.jmx4perl.http.AgentServlet;
 import org.jmx4perl.LogHandler;
-import org.osgi.framework.BundleActivator;
-import org.osgi.framework.BundleContext;
-import org.osgi.framework.ServiceListener;
-import org.osgi.framework.ServiceReference;
-import org.osgi.service.http.HttpContext;
-import org.osgi.service.http.HttpService;
-import org.osgi.service.http.NamespaceException;
+import org.osgi.framework.*;
+import org.osgi.service.http.*;
 import org.osgi.service.log.LogService;
 import org.osgi.util.tracker.ServiceTracker;
 import org.osgi.util.tracker.ServiceTrackerCustomizer;
 
-import javax.servlet.ServletException;
-import java.util.Dictionary;
-import java.util.Hashtable;
-
-import static org.jmx4perl.Config.*;
+import static org.jmx4perl.config.ConfigProperty.*;
 
 /*
  * jmx4perl - WAR Agent for exporting JMX via JSON
@@ -52,9 +48,6 @@ public class J4pActivator implements BundleActivator {
     // Context associated with this activator
     private BundleContext bundleContext;
 
-    // Listener used for monitoring HttpService
-    private ServiceListener httpServiceListener;
-
     // Tracker to be used for the LogService
     private ServiceTracker logTracker;
 
@@ -64,24 +57,28 @@ public class J4pActivator implements BundleActivator {
     // Prefix used for configuration values
     private static final String CONFIG_PREFIX = "org.jmx4perl";
 
-    public void start(BundleContext pBundleContext) throws Exception {
+    // Our own log handler
+    private LogHandler logHandler;
+
+    public void start(BundleContext pBundleContext) {
         bundleContext = pBundleContext;
 
         // Track logging service
         logTracker = new ServiceTracker(pBundleContext, LogService.class.getName(), null);
         logTracker.open();
+        logHandler = new ActivatorLogHandler(logTracker);
 
         // Track HttpService
-        httpServiceTracker = new ServiceTracker(pBundleContext,HttpService.class.getName(),getHttpServiceCustomizer(pBundleContext));
+        httpServiceTracker = new ServiceTracker(pBundleContext,HttpService.class.getName(), new HttpServiceCustomizer(pBundleContext));
         httpServiceTracker.open();
     }
 
-
-    public void stop(BundleContext pBundleContext) throws Exception {
+    public void stop(BundleContext pBundleContext) {
         assert pBundleContext.equals(bundleContext);
 
         logTracker.close();
         logTracker = null;
+        logHandler = null;
         httpServiceTracker.close();
         httpServiceTracker = null;
 
@@ -115,71 +112,14 @@ public class J4pActivator implements BundleActivator {
     // ==================================================================================
 
     // Customizer for registering servlet at a HttpService
-    private ServiceTrackerCustomizer getHttpServiceCustomizer(final BundleContext pContext) {
-        return new ServiceTrackerCustomizer() {
-                                    public Object addingService(ServiceReference reference) {
-                HttpService service = (HttpService) pContext.getService(reference);
-                try {
-                    service.registerServlet(getServletAlias(),
-                                            createServlet(),
-                                            getConfig(),
-                                            getHttpContext());
-                } catch (ServletException e) {
-                    LogService logService = (LogService) logTracker.getService();
-                    if (logService != null) {
-                        logService.log(LogService.LOG_ERROR,"Servlet Exception: " + e,e);
-                    }
-                } catch (NamespaceException e) {
-                    LogService logService = (LogService) logTracker.getService();
-                    if (logService != null) {
-                        logService.log(LogService.LOG_ERROR,"Namespace Exception: " + e,e);
-                    }
-                }
-                return service;
-            }
 
-            public void modifiedService(ServiceReference reference, Object service) {
-            }
-
-            public void removedService(ServiceReference reference, Object service) {
-                HttpService httpService = (HttpService) service;
-                httpService.unregister(getServletAlias());
-            }
-        };
-    }
-
-
-    private AgentServlet createServlet() {
-        return new AgentServlet(getLogHandler());
-    }
-
-    private LogHandler getLogHandler() {
-        return new LogHandler() {
-            public void debug(String message) {
-                log(LogService.LOG_DEBUG,message);
-            }
-
-            public void info(String message) {
-                log(LogService.LOG_INFO,message);
-            }
-
-            private void log(int level,String message) {
-                LogService logService = (LogService) logTracker.getService();
-                if (logService != null) {
-                    logService.log(level,message);
-                }
-            }
-
-            public void error(String message, Throwable t) {
-                LogService logService = (LogService) logTracker.getService();
-                logService.log(LogService.LOG_ERROR,message,t);
-            }
-        };
+    private AgentServlet createServlet(LogHandler pLogHandler) {
+        return new AgentServlet(pLogHandler);
     }
 
     private Dictionary<String,String> getConfig() {
         Dictionary<String,String> config = new Hashtable<String,String>();
-        for (Config key : Config.values()) {
+        for (ConfigProperty key : ConfigProperty.values()) {
             String value = getConfiguration(key);
             if (value != null) {
                 config.put(key.getKeyValue(),value);
@@ -188,7 +128,7 @@ public class J4pActivator implements BundleActivator {
         return config;
     }
 
-    private String getConfiguration(Config pKey) {
+    private String getConfiguration(ConfigProperty pKey) {
         // TODO: Use fragments and/or configuration service if available.
         String value = bundleContext.getProperty(CONFIG_PREFIX + "." + pKey);
         if (value == null) {
@@ -196,4 +136,69 @@ public class J4pActivator implements BundleActivator {
         }
         return value;
     }
+
+    // =============================================================================
+
+    private class HttpServiceCustomizer implements ServiceTrackerCustomizer {
+        private final BundleContext context;
+
+        public HttpServiceCustomizer(BundleContext pContext) {
+            context = pContext;
+        }
+
+        public Object addingService(ServiceReference reference) {
+            HttpService service = (HttpService) context.getService(reference);
+            try {
+                service.registerServlet(getServletAlias(),
+                                        createServlet(logHandler),
+                                        getConfig(),
+                                        getHttpContext());
+            } catch (ServletException e) {
+                logHandler.error("Servlet Exception: " + e,e);
+            } catch (NamespaceException e) {
+                logHandler.error("Namespace Exception: " + e,e);
+            }
+            return service;
+        }
+
+        public void modifiedService(ServiceReference reference, Object service) {
+        }
+
+        public void removedService(ServiceReference reference, Object service) {
+            HttpService httpService = (HttpService) service;
+            httpService.unregister(getServletAlias());
+        }
+    }
+
+    private static final class ActivatorLogHandler implements LogHandler {
+
+        private ServiceTracker logTracker;
+
+        private ActivatorLogHandler(ServiceTracker pLogTracker) {
+            logTracker = pLogTracker;
+        }
+
+        public void debug(String message) {
+            log(LogService.LOG_DEBUG,message);
+        }
+
+        public void info(String message) {
+            log(LogService.LOG_INFO,message);
+        }
+
+        private void log(int level,String message) {
+            LogService logService = (LogService) logTracker.getService();
+            if (logService != null) {
+                logService.log(level,message);
+            }
+        }
+
+        public void error(String message, Throwable t) {
+            LogService logService = (LogService) logTracker.getService();
+            if (logService != null) {
+                logService.log(LogService.LOG_ERROR,message,t);
+            }
+        }
+    }
+
 }

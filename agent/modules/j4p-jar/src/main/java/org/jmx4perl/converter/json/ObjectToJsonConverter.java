@@ -1,18 +1,19 @@
 package org.jmx4perl.converter.json;
 
 
-import org.jmx4perl.Config;
+import org.jmx4perl.config.ConfigProperty;
 import org.jmx4perl.JmxRequest;
 import org.jmx4perl.converter.StringToObjectConverter;
-import org.jmx4perl.converter.json.simplifier.ClassHandler;
-import org.jmx4perl.converter.json.simplifier.DomElementHandler;
-import org.jmx4perl.converter.json.simplifier.FileHandler;
-import org.jmx4perl.converter.json.simplifier.UrlHandler;
-import static org.jmx4perl.Config.*;
+import org.jmx4perl.converter.json.simplifier.*;
+
+import static org.jmx4perl.config.ConfigProperty.*;
 
 import org.json.simple.JSONObject;
 import javax.management.AttributeNotFoundException;
+
+import java.io.*;
 import java.lang.reflect.InvocationTargetException;
+import java.net.URL;
 import java.util.*;
 
 /*
@@ -51,52 +52,61 @@ import java.util.*;
  */
 public class ObjectToJsonConverter {
 
-    // List of dedicated handlers
-    private List<Handler> handlers;
+    // List of dedicated handlers used for delegation in serialization/deserializatin
+    private List<Extractor> handlers;
 
-    private ArrayHandler arrayHandler;
+    private ArrayExtractor arrayExtractor;
 
     // Thread-Local set in order to prevent infinite recursions
     private ThreadLocal<StackContext> stackContextLocal = new ThreadLocal<StackContext>();
-
-    // Thread-Local for the fault handler when extracting value
-    private ThreadLocal<JmxRequest.ValueFaultHandler> faultHandlerLocal = new ThreadLocal<JmxRequest.ValueFaultHandler>();
 
     // Used for converting string to objects when setting attributes
     private StringToObjectConverter stringToObjectConverter;
 
     private Integer hardMaxDepth,hardMaxCollectionSize,hardMaxObjects;
 
+    // Definition of simplifiers
+    private static final String SIMPLIFIERS_DEFAULT_DEF = "/META-INF/simplifiers-default";
+    private static final String SIMPLIFIERS_DEF = "META-INF/simplifiers";
+
     public ObjectToJsonConverter(StringToObjectConverter pStringToObjectConverter,
-                                 Map<Config,String> pConfig) {
+                                 Map<ConfigProperty,String> pConfig, Extractor... pSimplifyHandlers) {
         initLimits(pConfig);
 
-        handlers = new ArrayList<Handler>();
+        handlers = new ArrayList<Extractor>();
 
         // Collection handlers
-        handlers.add(new ListHandler());
-        handlers.add(new MapHandler());
+        handlers.add(new ListExtractor());
+        handlers.add(new MapExtractor());
 
         // Special, well known objects
-        handlers.add(new ClassHandler());
-        handlers.add(new FileHandler());
-        handlers.add(new DomElementHandler());
-        handlers.add(new UrlHandler());
+        addSimplifiers(pSimplifyHandlers);
 
-        handlers.add(new CompositeDataHandler());
-        handlers.add(new TabularDataHandler());
+        handlers.add(new CompositeDataExtractor());
+        handlers.add(new TabularDataExtractor());
 
         // Must be last in handlers, used default algorithm
-        handlers.add(new BeanHandler());
+        handlers.add(new BeanExtractor());
 
-        arrayHandler = new ArrayHandler();
+        arrayExtractor = new ArrayExtractor();
 
         stringToObjectConverter = pStringToObjectConverter;
     }
 
-    public JSONObject convertToJson(Object pValue, JmxRequest pRequest)
+
+    /**
+     * Convert the return value to a JSON object.
+     *
+     * @param pValue the value to convert
+     * @param pRequest the original request
+     * @param pUseValueWithPath if set, use the path given within the request to extract the inner value.
+     *        Otherwise, use the path directly
+     * @return the converted value
+     * @throws AttributeNotFoundException if within an path an attribute could not be found
+     */
+    public JSONObject convertToJson(Object pValue, JmxRequest pRequest, boolean pUseValueWithPath)
             throws AttributeNotFoundException {
-        Stack<String> extraStack = reverseArgs(pRequest);
+        Stack<String> extraStack = pUseValueWithPath ? reverseArgs(pRequest) : new Stack<String>();
 
         setupContext(pRequest);
 
@@ -114,15 +124,16 @@ public class ObjectToJsonConverter {
     /**
      * Get values for a write request. This method returns an array with two objects.
      * If no path is given (<code>pRequest.getExtraArgs() == null</code>), the returned values
-     *  are the new value
-     * and the old value. However, if a path is set, the returned new value is the outer value (which
-     * can be set by an corresponding JMX set operation) and the old value is the value
-     * of the object specified by the given path.
+     * are the new value and the old value. However, if a path is set, the returned new value
+     * is the outer value (which can be set by an corresponding JMX set operation) where the
+     * new value is set via the path expression. The old value is the value of the object specified
+     * by the given path.
      *
      * @param pType type of the outermost object to set as returned by an MBeanInfo structure.
      * @param pCurrentValue the object of the outermost object which can be null
      * @param pRequest the initial request
-     * @return object array with two elements (see above)
+     * @return object array with two elements, element 0 is the value to set (see above), element 1
+     *         is the old value.
      *
      * @throws AttributeNotFoundException if no such attribute exists (as specified in the request)
      * @throws IllegalAccessException if access to MBean fails
@@ -141,16 +152,24 @@ public class ObjectToJsonConverter {
             String lastPathElement = extraArgs.remove(extraArgs.size()-1);
             Stack<String> extraStack = reverseArgs(pRequest);
             // Get the object pointed to do with path-1
-            Object inner = extractObject(pCurrentValue,extraStack,false);
-            // Set the attribute pointed to by the path elements
-            // (depending of the parent object's type)
-            Object oldValue = setObjectValue(inner,lastPathElement,pRequest.getValue());
 
-            // We set an inner value, hence we have to return provided value itself.
-            return new Object[] {
-                    pCurrentValue,
-                    oldValue
-            };
+            try {
+                setupContext(pRequest);
+
+                Object inner = extractObject(pCurrentValue,extraStack,false);
+                // Set the attribute pointed to by the path elements
+                // (depending of the parent object's type)
+                Object oldValue = setObjectValue(inner,lastPathElement,pRequest.getValue());
+
+                // We set an inner value, hence we have to return provided value itself.
+                return new Object[] {
+                        pCurrentValue,
+                        oldValue
+                };
+            } finally {
+                clearContext();
+            }
+
         } else {
             // Return the objectified value
             return new Object[] {
@@ -162,7 +181,7 @@ public class ObjectToJsonConverter {
 
     // =================================================================================
 
-    private void initLimits(Map<Config, String> pConfig) {
+    private void initLimits(Map<ConfigProperty, String> pConfig) {
         // Max traversal depth
         if (pConfig != null) {
             hardMaxDepth = getNullSaveIntLimit(MAX_DEPTH.getValue(pConfig));
@@ -198,7 +217,7 @@ public class ObjectToJsonConverter {
     }
 
 
-    public Object extractObject(Object pValue,Stack<String> pExtraArgs,boolean jsonify)
+    public Object extractObject(Object pValue,Stack<String> pExtraArgs,boolean pJsonify)
             throws AttributeNotFoundException {
         StackContext stackContext = stackContextLocal.get();
         String limitReached = checkForLimits(pValue,stackContext);
@@ -215,9 +234,9 @@ public class ObjectToJsonConverter {
 
             if (pValue.getClass().isArray()) {
                 // Special handling for arrays
-                return arrayHandler.extractObject(this,pValue,pExtraArgs,jsonify);
+                return arrayExtractor.extractObject(this,pValue,pExtraArgs,pJsonify);
             }
-            return callHandler(pValue, pExtraArgs, jsonify);
+            return callHandler(pValue, pExtraArgs, pJsonify);
         } finally {
             stackContext.pop();
         }
@@ -238,12 +257,12 @@ public class ObjectToJsonConverter {
         return null;
     }
 
-    private Object callHandler(Object pValue, Stack<String> pExtraArgs, boolean jsonify)
+    private Object callHandler(Object pValue, Stack<String> pExtraArgs, boolean pJsonify)
             throws AttributeNotFoundException {
         Class pClazz = pValue.getClass();
-        for (Handler handler : handlers) {
+        for (Extractor handler : handlers) {
             if (handler.getType() != null && handler.getType().isAssignableFrom(pClazz)) {
-                return handler.extractObject(this,pValue,pExtraArgs,jsonify);
+                return handler.extractObject(this,pValue,pExtraArgs,pJsonify);
             }
         }
         throw new IllegalStateException(
@@ -259,10 +278,10 @@ public class ObjectToJsonConverter {
 
         Class clazz = pInner.getClass();
         if (clazz.isArray()) {
-            return arrayHandler.setObjectValue(stringToObjectConverter,pInner,pAttribute,pValue);
+            return arrayExtractor.setObjectValue(stringToObjectConverter,pInner,pAttribute,pValue);
         }
-        for (Handler handler : handlers) {
-            if (handler.getType() != null && handler.getType().isAssignableFrom(clazz)) {
+        for (Extractor handler : handlers) {
+            if (handler.getType() != null && handler.getType().isAssignableFrom(clazz) && handler.canSetValue()) {
                 return handler.setObjectValue(stringToObjectConverter,pInner,pAttribute,pValue);
             }
         }
@@ -297,23 +316,7 @@ public class ObjectToJsonConverter {
     */
 
     // =============================================================================
-    // Handler interface for dedicated handler
-
-    public interface Handler {
-        // Type for which this handler is responsiple
-        Class getType();
-
-        // Extract an object from pValue. In the simplest case, this is the value itself.
-        // For more complex data types, it is converted into a JSON structure if possible
-        // (and if 'jsonify' is true). pExtraArgs is not nul, this returns only a substructure,
-        // specified by the path represented by this stack
-        Object extractObject(ObjectToJsonConverter pConverter,Object pValue,Stack<String> pExtraArgs,boolean jsonify)
-                throws AttributeNotFoundException;
-
-        // Set an object value on a certrain attribute.
-        Object setObjectValue(StringToObjectConverter pConverter,Object pInner, String pAttribute, String pValue)
-                throws IllegalAccessException, InvocationTargetException;
-    }
+    // Handler interface for dedicated handler for serializing/deserializing
 
 
     // =============================================================================
@@ -349,9 +352,9 @@ public class ObjectToJsonConverter {
     }
 
     void setupContext(JmxRequest pRequest) {
-        Integer maxDepth = getLimit(pRequest.getProcessingConfigAsInt(Config.MAX_DEPTH),hardMaxDepth);
-        Integer maxCollectionSize = getLimit(pRequest.getProcessingConfigAsInt(Config.MAX_COLLECTION_SIZE),hardMaxCollectionSize);
-        Integer maxObjects = getLimit(pRequest.getProcessingConfigAsInt(Config.MAX_OBJECTS),hardMaxObjects);
+        Integer maxDepth = getLimit(pRequest.getProcessingConfigAsInt(ConfigProperty.MAX_DEPTH),hardMaxDepth);
+        Integer maxCollectionSize = getLimit(pRequest.getProcessingConfigAsInt(ConfigProperty.MAX_COLLECTION_SIZE),hardMaxCollectionSize);
+        Integer maxObjects = getLimit(pRequest.getProcessingConfigAsInt(ConfigProperty.MAX_OBJECTS),hardMaxObjects);
 
         setupContext(maxDepth, maxCollectionSize, maxObjects, pRequest.getValueFaultHandler());
     }
@@ -373,6 +376,89 @@ public class ObjectToJsonConverter {
         }
     }
 
+
+    // Simplifiers are added either explicitely or by reflection from a subpackage
+    private void addSimplifiers(Extractor[] pSimplifyHandlers) {
+        if (pSimplifyHandlers != null && pSimplifyHandlers.length > 0) {
+            handlers.addAll(Arrays.asList(pSimplifyHandlers));
+        } else {
+            // Add all
+            addSimplifiersFromDescriptor();
+        }
+    }
+
+    // Read in default and custom defintions for simpifiers and add them to
+    // our handlers
+    private void addSimplifiersFromDescriptor() {
+        Map<String,Extractor> extractorMap = new HashMap<String,Extractor>();
+        List<Extractor> extractors = new LinkedList<Extractor>();
+
+        readSimplifierDefinitions(extractorMap, extractors, SIMPLIFIERS_DEFAULT_DEF);
+        readSimplifierDefinitions(extractorMap, extractors, SIMPLIFIERS_DEF);
+        handlers.addAll(extractors);
+    }
+
+    private void readSimplifierDefinitions(Map<String, Extractor> pExtractorMap, List<Extractor> pExtractors, String pDefinition) {
+        try {
+            Enumeration<URL> resUrls = Thread.currentThread().getContextClassLoader().getResources(pDefinition);
+            if (!resUrls.hasMoreElements()) {
+                // Try to use this class classloader
+                URL res = getClass().getResource(pDefinition);
+                Vector vec = new Vector();
+                resUrls = res != null ? new Vector<URL>(Arrays.asList(res)).elements() : new Vector<URL>().elements();
+            }
+            while (resUrls.hasMoreElements()) {
+                readSimplifierDefinitionFromUrl(pExtractorMap, pExtractors, resUrls.nextElement());
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot load extractor from " + pDefinition + ": " + e,e);
+        }
+    }
+
+    private void readSimplifierDefinitionFromUrl(Map<String, Extractor> pExtractorMap, List<Extractor> pExtractors, URL pUrl) {
+        String line = null;
+        Exception error = null;
+        try {
+            LineNumberReader reader = new LineNumberReader(new InputStreamReader(pUrl.openStream()));
+            line = reader.readLine();
+            while (line != null) {
+                createOrRemoveSimplifier(pExtractorMap, pExtractors, line);
+                line = reader.readLine();
+            }
+        } catch (ClassNotFoundException e) {
+            error = e;
+        } catch (InstantiationException e) {
+            error = e;
+        } catch (IllegalAccessException e) {
+            error = e;
+        } catch (ClassCastException e) {
+            error = e;
+        } catch (IOException e) {
+            error = e;
+        } finally {
+            if (error != null) {
+                throw new IllegalStateException("Cannot load extractor " + line + " defined in " +
+                        pUrl + " : " + error + ". Aborting",error);
+            }
+        }
+    }
+
+    private void createOrRemoveSimplifier(Map<String, Extractor> pExtractorMap, List<Extractor> pExtractors, String pLine)
+            throws ClassNotFoundException, InstantiationException, IllegalAccessException {
+        if (pLine.length() > 0) {
+            if (pLine.startsWith("!")) {
+                Extractor ext = pExtractorMap.remove(pLine.substring(1));
+                if (ext != null) {
+                    pExtractors.remove(ext);
+                }
+            } else {
+                Class clazz = Thread.currentThread().getContextClassLoader().loadClass(pLine);
+                Extractor ext = (Extractor) clazz.newInstance();
+                pExtractorMap.put(pLine,ext);
+                pExtractors.add(ext);
+            }
+        }
+    }
 
     // =============================================================================
     // Context used for detecting call loops and the like

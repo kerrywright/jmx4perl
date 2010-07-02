@@ -13,7 +13,7 @@ plan tests => $HAS_CONFIG_GENERAL ? 4 : 1;
 $SIG{__WARN__} = sub { };
 my $config = new JMX::Jmx4Perl::Config("$Bin/j4p_test.cfg");
 if ($HAS_CONFIG_GENERAL) {
-    is(scalar(keys(%{$config->{config}})),2,"2 configuration entries read in");    
+    is(scalar(keys(%{$config->{server_config}})),2,"2 configuration entries read in");    
     ok($config->server_config_exists("jboss"),"JBoss configuration exists");
     my $s = $config->get_server_config("weblogic");
     is($s->{product},"Weblogic","Proper product found");

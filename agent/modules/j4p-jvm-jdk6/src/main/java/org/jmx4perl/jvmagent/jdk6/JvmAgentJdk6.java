@@ -4,7 +4,7 @@ import com.sun.net.httpserver.Authenticator;
 import com.sun.net.httpserver.BasicAuthenticator;
 import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpServer;
-import org.jmx4perl.Config;
+import org.jmx4perl.config.ConfigProperty;
 
 import java.io.*;
 import java.net.InetAddress;
@@ -41,7 +41,7 @@ import java.util.concurrent.Executors;
 /**
  * A JVM level agent using the JDK6 HTTP Server {@link com.sun.net.httpserver.HttpServer}
  *
- * Beside the configuration defined in {@link Config}, this agent honors the following
+ * Beside the configuration defined in {@link ConfigProperty}, this agent honors the following
  * additional configuration keys:
  *
  * <ul>
@@ -65,7 +65,7 @@ import java.util.concurrent.Executors;
  * @author roland
  * @since Mar 3, 2010
  */
-public class JvmAgentJdk6 {
+public final class JvmAgentJdk6 {
 
     private static final int DEFAULT_PORT = 8778;
     private static final int DEFAULT_BACKLOG = 10;
@@ -78,16 +78,17 @@ public class JvmAgentJdk6 {
      *
      * @param agentArgs arguments as given on the command line
      */
+    @SuppressWarnings("PMD.SystemPrintln")
     public static void premain(String agentArgs) {
         try {
             Map<String,String> agentConfig = parseArgs(agentArgs);
             final HttpServer server = createServer(agentConfig);
 
-            final Map<Config,String> j4pConfig = Config.extractConfig(agentConfig);
+            final Map<ConfigProperty,String> j4pConfig = ConfigProperty.extractConfig(agentConfig);
             final String contextPath = getContextPath(j4pConfig);
 
             HttpContext context = server.createContext(contextPath,new J4pHttpHandler(j4pConfig));
-            if (j4pConfig.containsKey(Config.USER)) {
+            if (j4pConfig.containsKey(ConfigProperty.USER)) {
                 context.setAuthenticator(getAuthentiator(j4pConfig));
             }
             if (agentConfig.containsKey("executor")) {
@@ -114,13 +115,14 @@ public class JvmAgentJdk6 {
         if (pConfig.get("backlog") != null) {
             backLog = Integer.parseInt(pConfig.get("backlog"));
         }
-        if (!pConfig.containsKey(Config.AGENT_CONTEXT.getKeyValue())) {
-            pConfig.put(Config.AGENT_CONTEXT.getKeyValue(),J4P_CONTEXT);
+        if (!pConfig.containsKey(ConfigProperty.AGENT_CONTEXT.getKeyValue())) {
+            pConfig.put(ConfigProperty.AGENT_CONTEXT.getKeyValue(),J4P_CONTEXT);
         }
         InetSocketAddress socketAddress = new InetSocketAddress(address,port);
         return HttpServer.create(socketAddress,backLog);
     }
 
+    @SuppressWarnings("PMD.SystemPrintln")
     private static void startServer(final HttpServer pServer, final String pContextPath) {
         ThreadGroup threadGroup = new ThreadGroup("j4p");
         threadGroup.setDaemon(false);
@@ -141,10 +143,10 @@ public class JvmAgentJdk6 {
         cleaner.start();
     }
 
-    private static String getContextPath(Map<Config, String> pJ4pConfig) {
-        String context = pJ4pConfig.get(Config.AGENT_CONTEXT);
+    private static String getContextPath(Map<ConfigProperty, String> pJ4pConfig) {
+        String context = pJ4pConfig.get(ConfigProperty.AGENT_CONTEXT);
         if (context == null) {
-            context = Config.AGENT_CONTEXT.getDefaultValue();
+            context = ConfigProperty.AGENT_CONTEXT.getDefaultValue();
         }
         if (!context.endsWith("/")) {
             context += "/";
@@ -152,6 +154,7 @@ public class JvmAgentJdk6 {
         return context;
     }
 
+    @SuppressWarnings("PMD.SystemPrintln")
     private static Map<String, String> parseArgs(String pAgentArgs) {
         Map<String,String> ret = new HashMap<String, String>();
         if (pAgentArgs != null && pAgentArgs.length() > 0) {
@@ -176,6 +179,7 @@ public class JvmAgentJdk6 {
         }
     }
 
+    @SuppressWarnings("PMD.SystemPrintln")
     private static Map<String, String> readConfig(String pFilename) {
         File file = new File(pFilename);
         try {
@@ -193,6 +197,7 @@ public class JvmAgentJdk6 {
         return readPropertiesFromInputStream(is,"j4p-agent.properties");
     }
 
+    @SuppressWarnings("PMD.SystemPrintln")
     private static Map<String, String> readPropertiesFromInputStream(InputStream pIs,String pLabel) {
         Map ret = new HashMap<String, String>();
         if (pIs == null) {
@@ -208,6 +213,7 @@ public class JvmAgentJdk6 {
         return ret;
     }
 
+    @SuppressWarnings("PMD.SystemPrintln")
     private static Executor getExecutor(Map<String,String> pConfig) {
         String executor = pConfig.get("executor");
         if ("fixed".equalsIgnoreCase(executor)) {
@@ -228,9 +234,9 @@ public class JvmAgentJdk6 {
     }
 
 
-    private static Authenticator getAuthentiator(Map<Config, String> pJ4pConfig) {
-        final String user = pJ4pConfig.get(Config.USER);
-        final String password = pJ4pConfig.get(Config.PASSWORD);
+    private static Authenticator getAuthentiator(Map<ConfigProperty, String> pJ4pConfig) {
+        final String user = pJ4pConfig.get(ConfigProperty.USER);
+        final String password = pJ4pConfig.get(ConfigProperty.PASSWORD);
         if (user == null || password == null) {
             throw new SecurityException("No user and/or password given: user = " + user +
                     ", password = " + (password != null ? "(set)" : "null"));

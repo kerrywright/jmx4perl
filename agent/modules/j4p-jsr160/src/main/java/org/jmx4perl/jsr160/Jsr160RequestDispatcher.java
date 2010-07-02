@@ -3,8 +3,8 @@ package org.jmx4perl.jsr160;
 import org.apache.commons.pool.KeyedPoolableObjectFactory;
 import org.apache.commons.pool.impl.GenericKeyedObjectPool;
 import org.apache.commons.pool.impl.GenericObjectPool;
-import org.jmx4perl.Config;
-import static org.jmx4perl.Config.*;
+import org.jmx4perl.config.ConfigProperty;
+import static org.jmx4perl.config.ConfigProperty.*;
 import org.jmx4perl.JmxRequest;
 import org.jmx4perl.backend.RequestDispatcher;
 import org.jmx4perl.config.Restrictor;
@@ -38,7 +38,7 @@ public class Jsr160RequestDispatcher implements RequestDispatcher {
     public Jsr160RequestDispatcher(ObjectToJsonConverter objectToJsonConverter,
                                    StringToObjectConverter stringToObjectConverter,
                                    Restrictor restrictor,
-                                   Map<Config, String> pConfig) {
+                                   Map<ConfigProperty, String> pConfig) {
         this(objectToJsonConverter, stringToObjectConverter, restrictor, new Jsr160ConnectionFactory(), pConfig);
     }
     
@@ -46,7 +46,7 @@ public class Jsr160RequestDispatcher implements RequestDispatcher {
                                    StringToObjectConverter stringToObjectConverter,
                                    Restrictor restrictor,
                                    KeyedPoolableObjectFactory connectorFactory,
-                                   Map<Config, String> pConfig) {
+                                   Map<ConfigProperty, String> pConfig) {
         requestHandlerManager = new RequestHandlerManager(
                 objectToJsonConverter, stringToObjectConverter, restrictor);
         connectionPool = new GenericKeyedObjectPool(connectorFactory);
@@ -133,6 +133,11 @@ public class Jsr160RequestDispatcher implements RequestDispatcher {
      */
     public boolean canHandle(JmxRequest pJmxRequest) {
         return pJmxRequest.getTargetConfig() != null;
+    }
+
+    public boolean useReturnValueWithPath(JmxRequest pJmxRequest) {
+        JsonRequestHandler handler = requestHandlerManager.getRequestHandler(pJmxRequest.getType());
+        return handler.useReturnValueWithPath();
     }
 
     /**

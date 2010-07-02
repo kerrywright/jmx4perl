@@ -1,16 +1,13 @@
 package org.jmx4perl;
 
-import org.jmx4perl.JmxRequest.Type;
-import org.json.simple.parser.JSONParser;
-import org.json.simple.parser.ParseException;
-
-import javax.management.MalformedObjectNameException;
-import java.io.IOException;
-import java.io.Reader;
 import java.io.UnsupportedEncodingException;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import javax.management.MalformedObjectNameException;
+
+import org.jmx4perl.JmxRequest.Type;
 
 /*
  * jmx4perl - WAR Agent for exporting JMX via JSON
@@ -41,7 +38,7 @@ import java.util.regex.Pattern;
  * @author roland
  * @since Oct 29, 2009
  */
-final public class JmxRequestFactory {
+public final class JmxRequestFactory {
 
     // Pattern for detecting escaped slashes in URL encoded requests
     private static final Pattern SLASH_ESCAPE_PATTERN = Pattern.compile("^\\^?-*\\+?$");
@@ -94,44 +91,29 @@ final public class JmxRequestFactory {
      * @param pParameterMap HTTP Query parameters
      * @return a newly created {@link org.jmx4perl.JmxRequest}
      */
-    static public JmxRequest createRequestFromUrl(String pPathInfo, Map<String,String[]> pParameterMap) {
+    public static JmxRequest createRequestFromUrl(String pPathInfo, Map<String,String[]> pParameterMap) {
         JmxRequest request = null;
         try {
-            String pathInfo = pPathInfo;
+            String pathInfo = extractPathInfo(pPathInfo, pParameterMap);
 
-            // If no pathinfo is given directly, we look for a query parameter named 'p'.
-            // This variant is helpful, if there are problems with the server mangling
-            // up the pathinfo (e.g. for security concerns, often '/','\',';' and other are not
-            // allowed in encoded form within the pathinfo)
-            if (pPathInfo == null || pPathInfo.length() == 0 || pathInfo.matches("^/+$")) {
-                String[] vals = pParameterMap.get("p");
-                if (vals != null && vals.length > 0) {
-                    pathInfo = vals[0];
-                }
+            // Get all path elements as a reverse stack
+            Stack<String> elements = extractElementsFromPath(pathInfo);
+            Type type = extractType(elements.pop());
+
+            Processor processor = PROCESSOR_MAP.get(type);
+            if (processor == null) {
+                throw new UnsupportedOperationException("Type " + type + " is not supported (yet)");
             }
 
-            if (pathInfo != null && pathInfo.length() > 0) {
-                // Get all path elements as a reverse stack
-                Stack<String> elements = extractElementsFromPath(pathInfo);
-                Type type = extractType(elements.pop());
+            // Parse request
+            request = processor.process(elements);
 
-                Processor processor = PROCESSOR_MAP.get(type);
-                if (processor == null) {
-                    throw new UnsupportedOperationException("Type " + type + " is not supported (yet)");
-                }
+            // Extract all additional args from the remaining path info
+            request.setExtraArgs(prepareExtraArgs(elements));
 
-                // Parse request
-                request = processor.process(elements);
-
-                // Extract all additional args from the remaining path info
-                request.setExtraArgs(toList(elements));
-
-                // Setup JSON representation
-                extractParameters(request,pParameterMap);
-                return request;
-            } else {
-                throw new IllegalArgumentException("No pathinfo given and no query parameter 'p'");
-            }
+            // Setup JSON representation
+            extractParameters(request,pParameterMap);
+            return request;
         } catch (NoSuchElementException exp) {
             throw new IllegalArgumentException("Invalid path info " + pPathInfo,exp);
         } catch (MalformedObjectNameException e) {
@@ -143,34 +125,56 @@ final public class JmxRequestFactory {
         }
     }
 
+    // Extract path info either from the 'real' URL path, or from an request parameter
+    private static String extractPathInfo(String pPathInfo, Map<String, String[]> pParameterMap) {
+        String pathInfo = pPathInfo;
+
+        // If no pathinfo is given directly, we look for a query parameter named 'p'.
+        // This variant is helpful, if there are problems with the server mangling
+        // up the pathinfo (e.g. for security concerns, often '/','\',';' and other are not
+        // allowed in encoded form within the pathinfo)
+        if (pPathInfo == null || pPathInfo.length() == 0 || pathInfo.matches("^/+$")) {
+            String[] vals = pParameterMap.get("p");
+            if (vals != null && vals.length > 0) {
+                pathInfo = vals[0];
+            }
+        }
+        if (pathInfo != null && pathInfo.length() > 0) {
+            return pathInfo;
+        } else {
+            throw new IllegalArgumentException("No pathinfo given and no query parameter 'p'");
+        }
+    }
+
 
     /**
-     * Create a list of {@link JmxRequest}s from the (POST) JSON content of an agent.
+     * Create a list of {@link JmxRequest}s from a JSON list representing jmx requests
      *
-     * @param content JSON representation of a {@link org.jmx4perl.JmxRequest}
-     * @return list with one or more requests
+     * @param pJsonRequests JSON representation of a list of {@link org.jmx4perl.JmxRequest}
+     * @return list with one or more {@link org.jmx4perl.JmxRequest}
+     * @throws javax.management.MalformedObjectNameException if the MBean name within the request is invalid
      */
-    static List<JmxRequest> createRequestsFromInputReader(Reader content) throws MalformedObjectNameException, IOException {
-        try {
-            JSONParser parser = new JSONParser();
-            Object json = parser.parse(content);
-            List<JmxRequest> ret = new ArrayList<JmxRequest>();
-            if (json instanceof List) {
-                for (Object o : (List) json) {
-                    if (!(o instanceof Map)) {
-                        throw new IllegalArgumentException("Not a request within the list for the " + content + ". Expected map, but found: " + o);
-                    }
-                    ret.add(new JmxRequest((Map) o));
-                }
-            } else if (json instanceof Map) {
-                ret.add(new JmxRequest((Map) json));
-            } else {
-                throw new IllegalArgumentException("Invalid JSON Request " + content);
+    public static List<JmxRequest> createRequestsFromJson(List pJsonRequests) throws MalformedObjectNameException {
+        List<JmxRequest> ret = new ArrayList<JmxRequest>();
+        for (Object o : pJsonRequests) {
+            if (!(o instanceof Map)) {
+                throw new IllegalArgumentException("Not a request within the list of requests " + pJsonRequests +
+                        ". Expected map, but found: " + o);
             }
-            return ret;
-        } catch (ParseException e) {
-            throw new IllegalArgumentException("Invalid JSON request " + content,e);
+            ret.add(new JmxRequest((Map) o));
         }
+        return ret;
+    }
+
+    /**
+     * Create a single {@link JmxRequest}s from a JSON map representation of a request
+     *
+     * @param pJsonRequest JSON representation of a {@link org.jmx4perl.JmxRequest}
+     * @return the created {@link org.jmx4perl.JmxRequest}
+     * @throws javax.management.MalformedObjectNameException if the MBean name within the request is invalid
+     */
+    public static JmxRequest createSingleRequestFromJson(Map<String,?> pJsonRequest) throws MalformedObjectNameException {
+        return new JmxRequest(pJsonRequest);
     }
 
     /*
@@ -202,54 +206,63 @@ final public class JmxRequestFactory {
         return ret;
     }
 
-
-    private static void extractElements(Stack<String> ret, Stack<String> pElementStack,StringBuffer previousBuffer)
+    private static void extractElements(Stack<String> pRet, Stack<String> pElementStack,StringBuffer pPreviousBuffer)
             throws UnsupportedEncodingException {
         if (pElementStack.isEmpty()) {
-            if (previousBuffer != null && previousBuffer.length() > 0) {
-                ret.push(decode(previousBuffer.toString()));
+            if (pPreviousBuffer != null && pPreviousBuffer.length() > 0) {
+                pRet.push(decode(pPreviousBuffer.toString()));
             }
             return;
         }
         String element = pElementStack.pop();
         Matcher matcher = SLASH_ESCAPE_PATTERN.matcher(element);
         if (matcher.matches()) {
-            if (ret.isEmpty()) {
-                return;
+            unescapeSlashes(element, pRet, pElementStack, pPreviousBuffer);
+        } else {
+            if (pPreviousBuffer != null) {
+                pRet.push(decode(pPreviousBuffer.toString()));
             }
-            StringBuffer val;
+            pRet.push(decode(element));
+            extractElements(pRet,pElementStack,null);
+        }
+    }
 
-            // Special escape at the beginning indicates that this element belongs
-            // to the next one
-            if (element.substring(0,1).equals("^")) {
-                val = new StringBuffer();
-            } else if (previousBuffer == null) {
-                val = new StringBuffer(ret.pop());
-            } else {
-                val = previousBuffer;
-            }
-            // Append appropriate nr of slashes
-            for (int j=0;j<element.length();j++) {
-                val.append("/");
-            }
-            // Special escape at the end indicates that this is the last element in the path
-            if (!element.substring(element.length()-1,element.length()).equals("+")) {
-                if (!pElementStack.isEmpty()) {
-                    val.append(decode(pElementStack.pop()));
-                }
-                extractElements(ret,pElementStack,val);
-                return;
-            } else {
-                ret.push(decode(val.toString()));
-                extractElements(ret,pElementStack,null);
-                return;
-            }
+    private static void unescapeSlashes(String pCurrentElement, Stack<String> pRet,
+                                        Stack<String> pElementStack, StringBuffer pPreviousBuffer) throws UnsupportedEncodingException {
+        if (pRet.isEmpty()) {
+            return;
         }
-        if (previousBuffer != null) {
-            ret.push(decode(previousBuffer.toString()));
+        StringBuffer val;
+
+        // Special escape at the beginning indicates that this element belongs
+        // to the next one
+        if (pCurrentElement.substring(0,1).equals("^")) {
+            val = new StringBuffer();
+        } else if (pPreviousBuffer == null) {
+            val = new StringBuffer(pRet.pop());
+        } else {
+            val = pPreviousBuffer;
         }
-        ret.push(decode(element));
-        extractElements(ret,pElementStack,null);
+        // Append appropriate nr of slashes
+        expandSlashes(val, pCurrentElement);
+
+        // Special escape at the end indicates that this is the last element in the path
+        if (!pCurrentElement.substring(pCurrentElement.length()-1, pCurrentElement.length()).equals("+")) {
+            if (!pElementStack.isEmpty()) {
+                val.append(decode(pElementStack.pop()));
+            }
+            extractElements(pRet,pElementStack,val);
+        } else {
+            pRet.push(decode(val.toString()));
+            extractElements(pRet,pElementStack,null);
+        }
+        return;
+    }
+
+    private static void expandSlashes(StringBuffer pVal, String pElement) {
+        for (int j=0;j< pElement.length();j++) {
+            pVal.append("/");
+        }
     }
 
     private static String decode(String s) {
@@ -267,12 +280,17 @@ final public class JmxRequestFactory {
         throw new IllegalArgumentException("Invalid request type '" + pTypeS + "'");
     }
 
-    private static List<String>toList(Stack<String> pElements) {
-        List<String> p = new ArrayList<String>();
+    private static List<String> prepareExtraArgs(Stack<String> pElements) {
+        List<String> ret = new ArrayList<String>();
         while (!pElements.isEmpty()) {
-            p.add(pElements.pop());
+            String element = pElements.pop();
+            // Check for escapes
+            while (element.endsWith("\\") && !pElements.isEmpty()) {
+                element = element.substring(0,element.length() - 1) + "/" + pElements.pop();
+            }
+            ret.add(element);
         }
-        return p;
+        return ret;
     }
 
     private static void extractParameters(JmxRequest pRequest,Map<String,String[]> pParameterMap) {

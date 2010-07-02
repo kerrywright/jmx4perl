@@ -38,12 +38,12 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
         StringTokenizer stok = new StringTokenizer(pAuth);
         String method = stok.nextToken();
         if (!"basic".equalsIgnoreCase(method)) {
-            throw new IllegalArgumentException("Only BasiAuthentication is supported");
+            throw new IllegalArgumentException("Only BasicAuthentication is supported");
         }
         String b64Auth = stok.nextToken();
         String auth = new String(decode(b64Auth));
 
-        int p = auth.indexOf(":");
+        int p = auth.indexOf(':');
         if (p != -1) {
             String name = auth.substring(0, p);
             String pwd = auth.substring(p+1);
@@ -64,27 +64,32 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
     public byte[] decode(String s) {
 
         if( s == null ){
-            throw new NullPointerException( "Input string was null." );
+            throw new IllegalArgumentException("Input string was null.");
         }
 
-        byte[] bytes;
+        byte[] inBytes;
         try {
-            bytes = s.getBytes("US-ASCII");
+            inBytes = s.getBytes("US-ASCII");
         }
         catch( java.io.UnsupportedEncodingException uee ) {
-            bytes = s.getBytes();
+            inBytes = s.getBytes();
         }
 
-        if( bytes.length == 0 ){
+        if( inBytes.length == 0 ) {
             return new byte[0];
-        }else if( bytes.length < 4 ){
+        } else if( inBytes.length < 4 ){
             throw new IllegalArgumentException(
-            "Base64-encoded string must have at least four characters, but length specified was " + bytes.length);
+            "Base64-encoded string must have at least four characters, but length specified was " + inBytes.length);
         }   // end if
 
-        byte[] DECODABET = J4pAuthenticatedHttpContext.DECODABET;
+        return decodeBytes(inBytes);
+    }
 
-        int    len34   = bytes.length * 3 / 4;       // Estimate on array size
+    // Do the conversion to bytes
+    private byte[] decodeBytes(byte[] pInBytes) {
+        byte[] decodabet = J4pAuthenticatedHttpContext.DECODABET;
+
+        int    len34   = pInBytes.length * 3 / 4;       // Estimate on array size
         byte[] outBuff = new byte[ len34 ]; // Upper limit on size of output
         int    outBuffPosn = 0;             // Keep track of where we're writing
 
@@ -94,10 +99,10 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
         byte   sbiCrop   = 0;               // Low seven bits (ASCII) of input
         byte   sbiDecode = 0;               // Special value from DECODABET
 
-        for( i = 0; i < 0 + bytes.length; i++ ) {  // Loop through source
+        for( i = 0; i < 0 + pInBytes.length; i++ ) {  // Loop through source
 
-            sbiCrop = (byte)(bytes[i] & 0x7f); // Only the low seven bits
-            sbiDecode = DECODABET[ sbiCrop ];   // Special value
+            sbiCrop = (byte)(pInBytes[i] & 0x7f); // Only the low seven bits
+            sbiDecode = decodabet[ sbiCrop ];   // Special value
 
             // White space, Equals sign, or legit Base64 character
             // Note the values such as -5 and -9 in the
@@ -119,7 +124,7 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
             else {
                 // There's a bad input character in the Base64 stream.
                 throw new IllegalArgumentException(String.format(
-                "Bad Base64 input character '%c' in array position %d", bytes[i], i ) );
+                "Bad Base64 input character '%d' in array position %d", pInBytes[i], i ) );
             }
         }
 
@@ -132,21 +137,8 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
             byte[] source, int srcOffset,
             byte[] destination, int destOffset) {
 
-        // Lots of error checking and exception throwing
-        if( source == null ){
-            throw new NullPointerException( "Source array was null." );
-        }   // end if
-        if( destination == null ){
-            throw new NullPointerException( "Destination array was null." );
-        }   // end if
-        if( srcOffset < 0 || srcOffset + 3 >= source.length ){
-            throw new IllegalArgumentException( String.format(
-            "Source array with length %d cannot have offset of %d and still process four bytes.", source.length, srcOffset ) );
-        }   // end if
-        if( destOffset < 0 || destOffset +2 >= destination.length ){
-            throw new IllegalArgumentException( String.format(
-            "Destination array with length %d cannot have offset of %d and still store three bytes.", destination.length, destOffset ) );
-        }   // end if
+        verifyArguments(source, srcOffset, destination, destOffset);
+
 
         if( source[ srcOffset + 2] == EQUALS_SIGN ) {
             int outBuff =   ( ( DECODABET[ source[ srcOffset    ] ] & 0xFF ) << 18 )
@@ -156,19 +148,22 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
             return 1;
         }
         else if( source[ srcOffset + 3 ] == EQUALS_SIGN ) {
+            //CHECKSTYLE:OFF
             int outBuff =   ( ( DECODABET[ source[ srcOffset     ] ] & 0xFF ) << 18 )
                           | ( ( DECODABET[ source[ srcOffset + 1 ] ] & 0xFF ) << 12 )
                           | ( ( DECODABET[ source[ srcOffset + 2 ] ] & 0xFF ) <<  6 );
+            //CHECKSTYLE:ON
 
             destination[ destOffset     ] = (byte)( outBuff >>> 16 );
             destination[ destOffset + 1 ] = (byte)( outBuff >>>  8 );
             return 2;
         } else {
+            //CHECKSTYLE:OFF
             int outBuff =   ( ( DECODABET[ source[ srcOffset     ] ] & 0xFF ) << 18 )
                           | ( ( DECODABET[ source[ srcOffset + 1 ] ] & 0xFF ) << 12 )
                           | ( ( DECODABET[ source[ srcOffset + 2 ] ] & 0xFF ) <<  6)
                           | ( ( DECODABET[ source[ srcOffset + 3 ] ] & 0xFF )      );
-
+            //CHECKSTYLE:ON
 
             destination[ destOffset     ] = (byte)( outBuff >> 16 );
             destination[ destOffset + 1 ] = (byte)( outBuff >>  8 );
@@ -178,6 +173,25 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
         }
     }
 
+    // Check for argument validity
+    private static void verifyArguments(byte[] source, int srcOffset, byte[] destination, int destOffset) {
+        // Lots of error checking and exception throwing
+        if( source == null ){
+            throw new IllegalArgumentException( "Source array was null." );
+        }   // end if
+        if( destination == null ){
+            throw new IllegalArgumentException( "Destination array was null." );
+        }   // end if
+        if( srcOffset < 0 || srcOffset + 3 >= source.length ){
+            throw new IllegalArgumentException( String.format(
+            "Source array with length %d cannot have offset of %d and still process four bytes.", source.length, srcOffset ) );
+        }   // end if
+        if( destOffset < 0 || destOffset +2 >= destination.length ){
+            throw new IllegalArgumentException( String.format(
+            "Destination array with length %d cannot have offset of %d and still store three bytes.", destination.length, destOffset ) );
+        }   // end if
+    }
+
     // =================================================================================================
     // Constants
 
@@ -185,7 +199,7 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
      * Translates a Base64 value to either its 6-bit reconstruction value
      * or a negative number indicating some other meaning.
      **/
-    private final static byte[] DECODABET = {
+    private static final byte[] DECODABET = {
         -9,-9,-9,-9,-9,-9,-9,-9,-9,                 // Decimal  0 -  8
         -5,-5,                                      // Whitespace: Tab and Linefeed
         -9,-9,                                      // Decimal 11 - 12
@@ -209,8 +223,8 @@ class J4pAuthenticatedHttpContext extends J4pHttpContext {
         -9,-9,-9,-9                                 // Decimal 123 - 126
     };
 
-    private final static byte WHITE_SPACE_ENC = -5; // Indicates white space in encoding
-    private final static byte EQUALS_SIGN_ENC = -1; // Indicates equals sign in encoding
-    private final static byte EQUALS_SIGN = (byte)'=';
+    private static final byte WHITE_SPACE_ENC = -5; // Indicates white space in encoding
+    private static final byte EQUALS_SIGN_ENC = -1; // Indicates equals sign in encoding
+    private static final byte EQUALS_SIGN = (byte)'=';
 
 }
